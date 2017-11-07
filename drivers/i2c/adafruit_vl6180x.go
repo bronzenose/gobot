@@ -80,7 +80,7 @@ gobot.Commander
 }
 
 
-// NewVl6180xDriver creates a new Vl6180xDriver.
+// NewVL6180xDriver creates a new VL6180xDriver.
 //
 // Params:
 //    conn Connector - the Adaptor to use with this Driver
@@ -89,8 +89,8 @@ gobot.Commander
 //    i2c.WithBus(int): bus to use with this driver
 //    i2c.WithAddress(int): address to use with this driver
 //
-func NewVl6180xDriver(a Connector, options ...func(Config)) *Vl6180xDriver {
-  vl6180x := &Vl6180xDriver{
+func NewVL6180xDriver(a Connector, options ...func(Config)) *VL6180xDriver {
+  vl6180x := &VL6180xDriver{
     name:      gobot.DefaultName("Vl6180x"),
     Commander: gobot.NewCommander(),
     connector: a,
@@ -113,22 +113,22 @@ func NewVl6180xDriver(a Connector, options ...func(Config)) *Vl6180xDriver {
 }
 
 // Name returns the Name for the Driver
-func (vl6180x *Vl6180xDriver) Name() string { return vl6180x.name }
+func (vl6180x *VL6180xDriver) Name() string { return vl6180x.name }
 
 // SetName sets the Name for the Driver
-func (vl6180x *Vl6180xDriver) SetName(n string) { vl6180x.name = n }
+func (vl6180x *VL6180xDriver) SetName(n string) { vl6180x.name = n }
 
 // Connection returns the connection for the Driver
-func (vl6180x *Vl6180xDriver) Connection() gobot.Connection { return vl6180x.connection.(gobot.Connection) }
+func (vl6180x *VL6180xDriver) Connection() gobot.Connection { return vl6180x.connection.(gobot.Connection) }
 
 type ErrorWriter struct {
-	con Gobot.Connection
+	con Connection
 	cw  uint
 	err error
 	strDuring string
 }
 
-func NewErrorWriter(con Gobot.Connection) *ErrorWriter {
+func NewErrorWriter(con Connection) *ErrorWriter {
 	pew := new(ErrorWriter)
 	pew.con = con
 	return pew
@@ -171,6 +171,17 @@ func (pew *ErrorWriter) WriteRegisterByte(bReg, bVal uint8) {
 	}
 }
 
+func (pew *ErrorWriter) WriteRegister16(bReg uint8, wVal uint16) {
+	if nil == pew.err {
+		pew.cw++
+		pew.err = pew.con.WriteWordData(bReg, wVal)
+		if nil != pew.err {
+			pew.strDuring = fmt.Sprintf("WriteRegisterWord(reg: %#X, val: %#X)",
+				bReg, wVal)
+		}
+	}
+}
+
 func (pew *ErrorWriter) ReadByte() (bRead uint8) {
 	if nil == pew.err {
 		pew.cw++
@@ -193,10 +204,21 @@ func (pew *ErrorWriter) ReadRegisterByte(bReg uint8) (bRead uint8) {
 	return
 }
 
-func (pew *ErrorWriter) PollRegister(bReg uint8, fnTest func(uint8)(bool)) {
+func (pew *ErrorWriter) ReadRegister16(bReg uint8) (bRead16 uint16) {
+	if nil == pew.err {
+		pew.cw++
+		bRead16, pew.err = pew.con.ReadWordData(bReg)
+		if nil != pew.err {
+			pew.strDuring = fmt.Sprintf("ReadRegisterWord(reg: %#X)", bReg)
+		}
+	}
+	return
+}
+
+func (pew *ErrorWriter) PollRegister(bReg uint8, fnSuccess func(uint8)(bool)) {
 	for {
 		bRead := pew.ReadRegisterByte(bReg)
-		if !pew.IsOk() || fn(bRead) {
+		if !pew.IsOk() || fnSuccess(bRead) {
 			return
 		}
 	}
@@ -204,7 +226,7 @@ func (pew *ErrorWriter) PollRegister(bReg uint8, fnTest func(uint8)(bool)) {
 
 
 // Start starts the Driver up, and writes start command
-func (vl6180x *Vl6180xDriver) Start() (err error) {
+func (vl6180x *VL6180xDriver) Start() (err error) {
   bus := vl6180x.GetBusOrDefault(vl6180x.connector.GetDefaultBus())
   address := vl6180x.GetAddressOrDefault(blinkmAddress)
 
@@ -228,7 +250,7 @@ func (vl6180x *Vl6180xDriver) Start() (err error) {
 }
 
 // Halt returns true if device is halted successfully
-func (vl6180x *Vl6180xDriver) Halt() (err error) { return }
+func (vl6180x *VL6180xDriver) Halt() (err error) { return }
 
 
 /**************************************************************************/
@@ -303,7 +325,7 @@ func  loadSettings(pew*ErrorWriter) {
 */
 /**************************************************************************/
 
-func (pvl6180x *VL6180xDriver) readRange() (bStatus, bRange uint8, err error) {
+func (pvl6180x *VL6180xDriver) readRange() (bRange, bStatus uint8, err error) {
 	pew := NewErrorWriter(vl6180x.connection)
   // wait for device to be ready for range measurement
 	pew.PollRegister(vl6180xRegResultRangeStatus, func(bRead uint8)(bool){
@@ -322,6 +344,9 @@ func (pvl6180x *VL6180xDriver) readRange() (bStatus, bRange uint8, err error) {
   // clear interrupt
   pew.WriteRegisterByte(vl6180xRegSystemInterruptClear, 0x07)
 
+	// read error message
+	bStatus = pew.ReadRangeStatus()
+
 	if !pew.IsOk() {
 		err = pew.Error()
 	}
@@ -335,8 +360,8 @@ func (pvl6180x *VL6180xDriver) readRange() (bStatus, bRange uint8, err error) {
 */
 /**************************************************************************/
 
-uint8T Adafruit_VL6180X::readRangeStatus(void) {
-  return (read8(vl6180xRegResultRangeStatus) >> 4);
+func (pew *VL6180xDriver) ReadRangeStatus() uint8 {
+  return pew.ReadRegisterByte(vl6180xRegResultRangeStatus) >> 4
 }
 
 
@@ -346,141 +371,67 @@ uint8T Adafruit_VL6180X::readRangeStatus(void) {
 */
 /**************************************************************************/
 
-float Adafruit_VL6180X::readLux(uint8T gain) {
-  uint8T reg;
+func (pvl6180x *VL6180xDriver) ReadLux(gain uint8) float32 {
+	pew := NewErrorWriter(pvl6180x.connection)
 
-  reg = read8(vl6180xRegSystemInterruptConfig);
-  reg &= ~0x38;
-  reg |= (0x4 << 3); // IRQ on ALS ready
-  write8(vl6180xRegSystemInterruptConfig, reg);
+  var bMask uint8
+  bMask = pew.ReadRegisterByte(vl6180xRegSystemInterruptConfig)
+  bMask &= ^0x38
+  bMask |= (0x4 << 3) // IRQ on ALS ready
+  pew.WriteRegisterByte(vl6180xRegSystemInterruptConfig, bMask)
 
   // 100 ms integration period
-  write8(vl6180xRegSysalsIntegrationPeriodHi, 0);
-  write8(vl6180xRegSysalsIntegrationPeriodLo, 100);
+  pew.WriteRegisterByte(vl6180xRegSysalsIntegrationPeriodHi, 0)
+  pew.WriteRegisterByte(vl6180xRegSysalsIntegrationPeriodLo, 100)
 
   // analog gain
-  if (gain > vl6180xAlsGain40) {
-    gain = vl6180xAlsGain40;
+  if gain > vl6180xAlsGain40 {
+    gain = vl6180xAlsGain40
   }
-  write8(vl6180xRegSysalsAnalogueGain, 0x40 | gain);
+  pew.WriteRegisterByte(vl6180xRegSysalsAnalogueGain, 0x40 | gain)
 
   // start ALS
-  write8(vl6180xRegSysalsStart, 0x1);
+  pew.WriteRegisterByte(vl6180xRegSysalsStart, 0x1)
 
   // Poll until "New Sample Ready threshold event" is set
-  while (4 != ((read8(vl6180xRegResultInterruptStatusGpio) >> 3) & 0x7));
+	pew.PollRegister(vl6180xRegResultInterruptStatusGpio,
+		func (bRead uint8)(bool) {return 4 == ((bRead >> 3) & 0x7)})
 
   // read lux!
-  float lux = read16(vl6180xRegResultAlsVal);
+  lux := float32(pew.ReadRegister16(vl6180xRegResultAlsVal))
 
   // clear interrupt
-  write8(vl6180xRegSystemInterruptClear, 0x07);
+  pew.WriteRegisterByte(vl6180xRegSystemInterruptClear, 0x07)
 
-  lux *= 0.32; // calibrated count/lux
+  lux *= 0.32 // calibrated count/lux
   switch(gain) {
   case vl6180xAlsGain1:
-    break;
+    break
   case vl6180xAlsGain125:
-    lux /= 1.25;
-    break;
+    lux /= 1.25
+    break
   case vl6180xAlsGain167:
-    lux /= 1.76;
-    break;
+    lux /= 1.76
+    break
   case vl6180xAlsGain25:
-    lux /= 2.5;
-    break;
+    lux /= 2.5
+    break
   case vl6180xAlsGain5:
-    lux /= 5;
-    break;
+    lux /= 5
+    break
   case vl6180xAlsGain10:
-    lux /= 10;
-    break;
+    lux /= 10
+    break
   case vl6180xAlsGain20:
-    lux /= 20;
-    break;
+    lux /= 20
+    break
   case vl6180xAlsGain40:
-    lux /= 20;
-    break;
+    lux /= 20
+    break
   }
-  lux *= 100;
-  lux /= 100; // integration time in ms
+  //lux *= 100
+  //lux /= 100 // integration time in ms
 
 
-  return lux;
+  return lux
 }
-
-/**************************************************************************/
-/*! 
-    @brief  I2C low level interfacing
-*/
-/**************************************************************************/
-
-
-// Read 1 byte from the VL6180X at 'address'
-uint8_t Adafruit_VL6180X::read8(uint16_t address)
-{
-  uint8_t data;
-
-  Wire.beginTransmission(_i2caddr);
-  Wire.write(address>>8);
-  Wire.write(address);
-  Wire.endTransmission();
-
-  Wire.requestFrom(_i2caddr, (uint8_t)1);
-  uint8_t r = Wire.read();
-
-#if defined(I2C_DEBUG)
-  Serial.print("\t$"); Serial.print(address, HEX); Serial.print(": 0x"); Serial.println(r, HEX);
-#endif
-
-  return r;
-}
-
-
-// Read 2 byte from the VL6180X at 'address'
-uint16_t Adafruit_VL6180X::read16(uint16_t address)
-{
-  uint16_t data;
-
-  Wire.beginTransmission(_i2caddr);
-  Wire.write(address>>8);
-  Wire.write(address);
-  Wire.endTransmission();
-
-  Wire.requestFrom(_i2caddr, (uint8_t)2);
-  while(!Wire.available());
-  data = Wire.read();
-  data <<= 8;
-  while(!Wire.available());
-  data |= Wire.read();
-  
-  return data;
-}
-
-// write 1 byte
-void Adafruit_VL6180X::write8(uint16_t address, uint8_t data)
-{
-  Wire.beginTransmission(_i2caddr);
-  Wire.write(address>>8);
-  Wire.write(address);
-  Wire.write(data);  
-  Wire.endTransmission();
-
-#if defined(I2C_DEBUG)
-  Serial.print("\t$"); Serial.print(address, HEX); Serial.print(" = 0x"); Serial.println(data, HEX);
-#endif
-}
-
-
-// write 2 bytes
-void Adafruit_VL6180X::write16(uint16_t address, uint16_t data)
-{
-  Wire.beginTransmission(_i2caddr);
-  Wire.write(address>>8);
-  Wire.write(address);
-  Wire.write(data>>8);
-  Wire.write(data);
-  Wire.endTransmission();
-}
-
-
