@@ -34,19 +34,19 @@ import (
 
 const vl6180xDefaultI2cAddr uint8 = 0x29
 
-const vl6180xRegIdentificationModelId uint8 = 0x000
-const vl6180xRegSystemInterruptConfig uint8 = 0x014
-const vl6180xRegSystemInterruptClear uint8 = 0x015
-const vl6180xRegSystemFreshOutOfReset uint8 = 0x016
-const vl6180xRegSysrangeStart uint8 = 0x018
-const vl6180xRegSysalsStart uint8 = 0x038
-const vl6180xRegSysalsAnalogueGain uint8 = 0x03F
-const vl6180xRegSysalsIntegrationPeriodHi uint8 = 0x040
-const vl6180xRegSysalsIntegrationPeriodLo uint8 = 0x041
-const vl6180xRegResultAlsVal uint8 = 0x050
-const vl6180xRegResultRangeVal uint8 = 0x062
-const vl6180xRegResultRangeStatus uint8 = 0x04d
-const vl6180xRegResultInterruptStatusGpio uint8 = 0x04f
+const vl6180xRegIdentificationModelId uint16 = 0x0000
+const vl6180xRegSystemInterruptConfig uint16 = 0x0014
+const vl6180xRegSystemInterruptClear uint16 = 0x0015
+const vl6180xRegSystemFreshOutOfReset uint16 = 0x0016
+const vl6180xRegSysrangeStart uint16 = 0x0018
+const vl6180xRegSysalsStart uint16 = 0x0038
+const vl6180xRegSysalsAnalogueGain uint16 = 0x003F
+const vl6180xRegSysalsIntegrationPeriodHi uint16 = 0x0040
+const vl6180xRegSysalsIntegrationPeriodLo uint16 = 0x0041
+const vl6180xRegResultAlsVal uint16 = 0x0050
+const vl6180xRegResultRangeVal uint16 = 0x0062
+const vl6180xRegResultRangeStatus uint16 = 0x004d
+const vl6180xRegResultInterruptStatusGpio uint16 = 0x004f
 
 const vl6180xAlsGain1 uint8 = 0x06
 const vl6180xAlsGain125 uint8 = 0x05
@@ -160,24 +160,28 @@ func (pew *ErrorWriter) WriteByte(b uint8) {
 	}
 }
 
-func (pew *ErrorWriter) WriteRegisterByte(bReg, bVal uint8) {
+func (pew *ErrorWriter) WriteRegisterByte(wReg uint16, bVal uint8) {
 	if nil == pew.err {
-		pew.cw++
-		pew.err = pew.con.WriteByteData(bReg, bVal)
+		pew.WriteByte(uint8(wReg >> 8))
+		pew.WriteByte(uint8(wReg & 0xff))
+		pew.WriteByte(bVal)
 		if nil != pew.err {
+			// this hides the exact write that failed but seems more useful
 			pew.strDuring = fmt.Sprintf("WriteRegisterByte(reg: %#X, val: %#X)",
-				bReg, bVal)
+				wReg, bVal)
 		}
 	}
 }
 
-func (pew *ErrorWriter) WriteRegister16(bReg uint8, wVal uint16) {
+func (pew *ErrorWriter) WriteRegisterWord(wReg, wVal uint16) {
 	if nil == pew.err {
-		pew.cw++
-		pew.err = pew.con.WriteWordData(bReg, wVal)
+		pew.WriteByte(uint8(wReg >> 8))
+		pew.WriteByte(uint8(wReg & 0xff))
+		pew.WriteByte(uint8(wVal >> 8))
+		pew.WriteByte(uint8(wVal & 0xff))
 		if nil != pew.err {
 			pew.strDuring = fmt.Sprintf("WriteRegisterWord(reg: %#X, val: %#X)",
-				bReg, wVal)
+				wReg, wVal)
 		}
 	}
 }
@@ -193,31 +197,46 @@ func (pew *ErrorWriter) ReadByte() (bRead uint8) {
 	return
 }
 
-func (pew *ErrorWriter) ReadRegisterByte(bReg uint8) (bRead uint8) {
+func (pew *ErrorWriter) ReadWord() (wRead uint16) {
 	if nil == pew.err {
-		pew.cw++
-		bRead, pew.err = pew.con.ReadByteData(bReg)
+		bMsb := pew.ReadByte()
+		bLsb := pew.ReadByte()
 		if nil != pew.err {
-			pew.strDuring = fmt.Sprintf("ReadRegisterByte(reg: %#X)", bReg)
+			pew.strDuring = fmt.Sprintf("ReadByte()")
+		} else {
+			wRead = (uint16(bMsb) << 8 ) | uint16(bLsb)
 		}
 	}
 	return
 }
 
-func (pew *ErrorWriter) ReadRegister16(bReg uint8) (bRead16 uint16) {
+func (pew *ErrorWriter) ReadRegisterByte(wReg uint16) (bRead uint8) {
 	if nil == pew.err {
-		pew.cw++
-		bRead16, pew.err = pew.con.ReadWordData(bReg)
+		pew.WriteByte(uint8(wReg >> 8))
+		pew.WriteByte(uint8(wReg & 0xff))
+		bRead = pew.ReadByte()
 		if nil != pew.err {
-			pew.strDuring = fmt.Sprintf("ReadRegisterWord(reg: %#X)", bReg)
+			pew.strDuring = fmt.Sprintf("ReadRegisterByte(reg: %#X)", wReg)
 		}
 	}
 	return
 }
 
-func (pew *ErrorWriter) PollRegister(bReg uint8, fnSuccess func(uint8)(bool)) {
+func (pew *ErrorWriter) ReadRegisterWord(wReg uint16) (wRead uint16) {
+	if nil == pew.err {
+		pew.WriteByte(uint8(wReg >> 8))
+		pew.WriteByte(uint8(wReg & 0xff))
+		wRead = pew.ReadWord()
+		if nil != pew.err {
+			pew.strDuring = fmt.Sprintf("ReadRegisterWord(reg: %#X)", wReg)
+		}
+	}
+	return
+}
+
+func (pew *ErrorWriter) PollRegister(wReg uint16, fnSuccess func(uint8)(bool)) {
 	for {
-		bRead := pew.ReadRegisterByte(bReg)
+		bRead := pew.ReadRegisterByte(wReg)
 		if !pew.IsOk() || fnSuccess(bRead) {
 			return
 		}
@@ -326,7 +345,7 @@ func  loadSettings(pew*ErrorWriter) {
 /**************************************************************************/
 
 func (pvl6180x *VL6180xDriver) readRange() (bRange, bStatus uint8, err error) {
-	pew := NewErrorWriter(vl6180x.connection)
+	pew := NewErrorWriter(pvl6180x.connection)
   // wait for device to be ready for range measurement
 	pew.PollRegister(vl6180xRegResultRangeStatus, func(bRead uint8)(bool){
 		return 0 != (bRead & 0x01)
@@ -360,7 +379,7 @@ func (pvl6180x *VL6180xDriver) readRange() (bRange, bStatus uint8, err error) {
 */
 /**************************************************************************/
 
-func (pew *VL6180xDriver) ReadRangeStatus() uint8 {
+func (pew *ErrorWriter) ReadRangeStatus() uint8 {
   return pew.ReadRegisterByte(vl6180xRegResultRangeStatus) >> 4
 }
 
@@ -376,7 +395,7 @@ func (pvl6180x *VL6180xDriver) ReadLux(gain uint8) float32 {
 
   var bMask uint8
   bMask = pew.ReadRegisterByte(vl6180xRegSystemInterruptConfig)
-  bMask &= ^0x38
+  bMask &= ^uint8(0x38)
   bMask |= (0x4 << 3) // IRQ on ALS ready
   pew.WriteRegisterByte(vl6180xRegSystemInterruptConfig, bMask)
 
@@ -398,7 +417,7 @@ func (pvl6180x *VL6180xDriver) ReadLux(gain uint8) float32 {
 		func (bRead uint8)(bool) {return 4 == ((bRead >> 3) & 0x7)})
 
   // read lux!
-  lux := float32(pew.ReadRegister16(vl6180xRegResultAlsVal))
+  lux := float32(pew.ReadRegisterWord(vl6180xRegResultAlsVal))
 
   // clear interrupt
   pew.WriteRegisterByte(vl6180xRegSystemInterruptClear, 0x07)
