@@ -1,6 +1,7 @@
 package i2c
 import (
 	"fmt"
+	"container/ring"
 	"gobot.io/x/gobot"
 )
 
@@ -34,19 +35,19 @@ import (
 
 const vl6180xDefaultI2cAddr uint8 = 0x29
 
-const vl6180xRegIdentificationModelId uint16 = 0x0000
-const vl6180xRegSystemInterruptConfig uint16 = 0x0014
-const vl6180xRegSystemInterruptClear uint16 = 0x0015
-const vl6180xRegSystemFreshOutOfReset uint16 = 0x0016
-const vl6180xRegSysrangeStart uint16 = 0x0018
-const vl6180xRegSysalsStart uint16 = 0x0038
-const vl6180xRegSysalsAnalogueGain uint16 = 0x003F
-const vl6180xRegSysalsIntegrationPeriodHi uint16 = 0x0040
-const vl6180xRegSysalsIntegrationPeriodLo uint16 = 0x0041
-const vl6180xRegResultAlsVal uint16 = 0x0050
-const vl6180xRegResultRangeVal uint16 = 0x0062
-const vl6180xRegResultRangeStatus uint16 = 0x004d
-const vl6180xRegResultInterruptStatusGpio uint16 = 0x004f
+const vl6180xRegIdentificationModelId uint16 = 0x00
+const vl6180xRegSystemInterruptConfig uint16 = 0x14
+const vl6180xRegSystemInterruptClear uint16 = 0x15
+const vl6180xRegSystemFreshOutOfReset uint16 = 0x16
+const vl6180xRegSysrangeStart uint16 = 0x18
+const vl6180xRegSysalsStart uint16 = 0x38
+const vl6180xRegSysalsAnalogueGain uint16 = 0x3F
+const vl6180xRegSysalsIntegrationPeriodHi uint16 = 0x40
+const vl6180xRegSysalsIntegrationPeriodLo uint16 = 0x41
+const vl6180xRegResultAlsVal uint16 = 0x50
+const vl6180xRegResultRangeVal uint16 = 0x62
+const vl6180xRegResultRangeStatus uint16 = 0x4d
+const vl6180xRegResultInterruptStatusGpio uint16 = 0x4f
 
 const vl6180xAlsGain1 uint8 = 0x06
 const vl6180xAlsGain125 uint8 = 0x05
@@ -75,6 +76,7 @@ type VL6180xDriver struct {
 name       string
 connector  Connector
 connection Connection
+pringDebugStr *ring.Ring
 Config
 gobot.Commander
 }
@@ -95,6 +97,7 @@ func NewVL6180xDriver(a Connector, options ...func(Config)) *VL6180xDriver {
     Commander: gobot.NewCommander(),
     connector: a,
     Config:    NewConfig(),
+		pringDebugStr: ring.New(10),
   }
 
   for _, option := range options {
@@ -154,20 +157,32 @@ func (pew *ErrorWriter) WriteByte(b uint8) {
 	if nil == pew.err {
 		pew.cw++
 		pew.err = pew.con.WriteByte(b)
+fmt.Printf("Write: %0x  err: %v\n", b, pew.err)
 		if nil != pew.err {
 			pew.strDuring = fmt.Sprintf("WriteByte(%#X)", b)
 		}
 	}
 }
 
-func (pew *ErrorWriter) WriteRegisterByte(wReg uint16, bVal uint8) {
+func (pew *ErrorWriter) Write8Register8(bReg, bVal uint8) {
+	if nil == pew.err {
+		pew.cw++
+		pew.err = pew.con.WriteByteData(bReg, bVal)
+		fmt.Printf("Write8Register8(reg: %#x val: %#x)  err: %v\n", bReg, bVal, pew.err)
+		if nil != pew.err {
+			pew.strDuring = fmt.Sprintf("Write8Register8(reg: %#x, val: %#x)", bReg, bVal)
+		}
+	}
+}
+
+func (pew *ErrorWriter) Write8Register16(wReg uint16, bVal uint8) {
 	if nil == pew.err {
 		pew.WriteByte(uint8(wReg >> 8))
 		pew.WriteByte(uint8(wReg & 0xff))
 		pew.WriteByte(bVal)
 		if nil != pew.err {
 			// this hides the exact write that failed but seems more useful
-			pew.strDuring = fmt.Sprintf("WriteRegisterByte(reg: %#X, val: %#X)",
+			pew.strDuring = fmt.Sprintf("Write8Register16(reg: %#X, val: %#X)",
 				wReg, bVal)
 		}
 	}
@@ -190,6 +205,7 @@ func (pew *ErrorWriter) ReadByte() (bRead uint8) {
 	if nil == pew.err {
 		pew.cw++
 		bRead, pew.err = pew.con.ReadByte()
+fmt.Printf("Read: %0x  err: %v\n", bRead, pew.err)
 		if nil != pew.err {
 			pew.strDuring = fmt.Sprintf("ReadByte()")
 		}
@@ -210,61 +226,115 @@ func (pew *ErrorWriter) ReadWord() (wRead uint16) {
 	return
 }
 
-func (pew *ErrorWriter) ReadRegisterByte(wReg uint16) (bRead uint8) {
+func (pew *ErrorWriter) Read8Register8(bReg uint8) (bRead uint8) {
+	if nil == pew.err {
+		pew.cw++
+		bRead, pew.err = pew.con.ReadByteData(bReg)
+		fmt.Printf("Read8Register8 reg: %#x read: %#x err: %v\n", bReg, bRead, pew.err)
+		if nil != pew.err {
+			pew.strDuring = fmt.Sprintf("Read8Register8()")
+		}
+	}
+	return
+}
+
+func (pew *ErrorWriter) Read8Register16(wReg uint16) (bRead uint8) {
 	if nil == pew.err {
 		pew.WriteByte(uint8(wReg >> 8))
 		pew.WriteByte(uint8(wReg & 0xff))
 		bRead = pew.ReadByte()
 		if nil != pew.err {
-			pew.strDuring = fmt.Sprintf("ReadRegisterByte(reg: %#X)", wReg)
+			pew.strDuring = fmt.Sprintf("Read8Register16(reg: %#X)", wReg)
 		}
 	}
 	return
 }
 
-func (pew *ErrorWriter) ReadRegisterWord(wReg uint16) (wRead uint16) {
+func (pew *ErrorWriter) Read16Register8(bReg uint8) (wRead uint16) {
+	if nil == pew.err {
+		pew.cw++
+		wRead, pew.err = pew.con.ReadWordData(bReg)
+		fmt.Printf("Read16Register8 reg: %#x read: %#x err: %v\n", bReg, wRead, pew.err)
+		if nil != pew.err {
+			pew.strDuring = fmt.Sprintf("Read16Register8()")
+		}
+	}
+	return
+}
+
+func (pew *ErrorWriter) Read16Register16(wReg uint16) (wRead uint16) {
 	if nil == pew.err {
 		pew.WriteByte(uint8(wReg >> 8))
 		pew.WriteByte(uint8(wReg & 0xff))
 		wRead = pew.ReadWord()
 		if nil != pew.err {
-			pew.strDuring = fmt.Sprintf("ReadRegisterWord(reg: %#X)", wReg)
+			pew.strDuring = fmt.Sprintf("Read16Register16(reg: %#X)", wReg)
 		}
 	}
 	return
 }
 
-func (pew *ErrorWriter) PollRegister(wReg uint16, fnSuccess func(uint8)(bool)) {
+func (pew *ErrorWriter) PollRegister16(wReg uint16, fnSuccess func(uint8)(bool)) {
 	for {
-		bRead := pew.ReadRegisterByte(wReg)
+		bRead := pew.Read8Register16(wReg)
 		if !pew.IsOk() || fnSuccess(bRead) {
 			return
 		}
 	}
 }
 
+func (pvl6180x *VL6180xDriver) debugStatusf(strF string, args ...interface{}) {
+	str := fmt.Sprintf(strF, args...)
+	pvl6180x.pringDebugStr.Value = str
+	pvl6180x.pringDebugStr = pvl6180x.pringDebugStr.Next()
+}
+
+func (pvl6180x *VL6180xDriver) debugStatus(str string) {
+	pvl6180x.pringDebugStr.Value = str
+	pvl6180x.pringDebugStr = pvl6180x.pringDebugStr.Next()
+}
+
+func (pvl6180x *VL6180xDriver) DebugStatus() string {
+	var str string
+	pvl6180x.pringDebugStr.Do(func(i interface{}) {
+		if nil != i {
+			str += i.(string)
+			str += "\n" }
+		})
+	return str
+}
 
 // Start starts the Driver up, and writes start command
 func (vl6180x *VL6180xDriver) Start() (err error) {
   bus := vl6180x.GetBusOrDefault(vl6180x.connector.GetDefaultBus())
-  address := vl6180x.GetAddressOrDefault(blinkmAddress)
+  address := vl6180x.GetAddressOrDefault(int(vl6180xDefaultI2cAddr))
 
   vl6180x.connection, err = vl6180x.connector.GetConnection(address, bus)
+	vl6180x.debugStatusf("connecting to address %#x on bus %#x returned err %v", address, bus, err)
   if err != nil {
     return
   }
 
 	pew := NewErrorWriter(vl6180x.connection)
-	b := pew.ReadRegisterByte(vl6180xRegIdentificationModelId)
+	b := pew.Read8Register16(vl6180xRegIdentificationModelId)
 	if !pew.IsOk() {
-		return pew.Error()
-	}
+		err = pew.Error()
+		vl6180x.debugStatusf("reading the chip model ID (our first contact with it) returned err %v",  err)
+		return
+		}
+	vl6180x.debugStatusf("read chip model %#x", b)
   if b != 0xB4 {
+		//vl6180x.debugStatus("MODEL DIDN'T MATCH BUT WE'RE GOING TO PROCEED ANYWAY")
     return fmt.Errorf("Model ID mismatch. Expected 0xB4, found: %#X", b)
   }
 
   loadSettings(pew);
-  pew.WriteRegisterByte(vl6180xRegSystemFreshOutOfReset, 0x00)
+	if !pew.IsOk() {
+		vl6180x.debugStatus("error loading status")
+	} else {
+		vl6180x.debugStatus("loaded status successfully")
+	}
+	pew.Write8Register16(vl6180xRegSystemFreshOutOfReset, 0x00)
 	return pew.Error()
 }
 
@@ -282,59 +352,59 @@ func  loadSettings(pew*ErrorWriter) {
     // load settings!
 
     // private settings from page 24 of app note
-    pew.WriteRegisterByte(0x0207, 0x01)
-    pew.WriteRegisterByte(0x0208, 0x01)
-    pew.WriteRegisterByte(0x0096, 0x00)
-    pew.WriteRegisterByte(0x0097, 0xfd)
-    pew.WriteRegisterByte(0x00e3, 0x00)
-    pew.WriteRegisterByte(0x00e4, 0x04)
-    pew.WriteRegisterByte(0x00e5, 0x02)
-    pew.WriteRegisterByte(0x00e6, 0x01)
-    pew.WriteRegisterByte(0x00e7, 0x03)
-    pew.WriteRegisterByte(0x00f5, 0x02)
-    pew.WriteRegisterByte(0x00d9, 0x05)
-    pew.WriteRegisterByte(0x00db, 0xce)
-    pew.WriteRegisterByte(0x00dc, 0x03)
-    pew.WriteRegisterByte(0x00dd, 0xf8)
-    pew.WriteRegisterByte(0x009f, 0x00)
-    pew.WriteRegisterByte(0x00a3, 0x3c)
-    pew.WriteRegisterByte(0x00b7, 0x00)
-    pew.WriteRegisterByte(0x00bb, 0x3c)
-    pew.WriteRegisterByte(0x00b2, 0x09)
-    pew.WriteRegisterByte(0x00ca, 0x09)
-    pew.WriteRegisterByte(0x0198, 0x01)
-    pew.WriteRegisterByte(0x01b0, 0x17)
-    pew.WriteRegisterByte(0x01ad, 0x00)
-    pew.WriteRegisterByte(0x00ff, 0x05)
-    pew.WriteRegisterByte(0x0100, 0x05)
-    pew.WriteRegisterByte(0x0199, 0x05)
-    pew.WriteRegisterByte(0x01a6, 0x1b)
-    pew.WriteRegisterByte(0x01ac, 0x3e)
-    pew.WriteRegisterByte(0x01a7, 0x1f)
-    pew.WriteRegisterByte(0x0030, 0x00)
+    pew.Write8Register16(0x0207, 0x01)
+    pew.Write8Register16(0x0208, 0x01)
+    pew.Write8Register16(0x0096, 0x00)
+    pew.Write8Register16(0x0097, 0xfd)
+    pew.Write8Register16(0x00e3, 0x00)
+    pew.Write8Register16(0x00e4, 0x04)
+    pew.Write8Register16(0x00e5, 0x02)
+    pew.Write8Register16(0x00e6, 0x01)
+    pew.Write8Register16(0x00e7, 0x03)
+    pew.Write8Register16(0x00f5, 0x02)
+    pew.Write8Register16(0x00d9, 0x05)
+    pew.Write8Register16(0x00db, 0xce)
+    pew.Write8Register16(0x00dc, 0x03)
+    pew.Write8Register16(0x00dd, 0xf8)
+    pew.Write8Register16(0x009f, 0x00)
+    pew.Write8Register16(0x00a3, 0x3c)
+    pew.Write8Register16(0x00b7, 0x00)
+    pew.Write8Register16(0x00bb, 0x3c)
+    pew.Write8Register16(0x00b2, 0x09)
+    pew.Write8Register16(0x00ca, 0x09)
+    pew.Write8Register16(0x0198, 0x01)
+    pew.Write8Register16(0x01b0, 0x17)
+    pew.Write8Register16(0x01ad, 0x00)
+    pew.Write8Register16(0x00ff, 0x05)
+    pew.Write8Register16(0x0100, 0x05)
+    pew.Write8Register16(0x0199, 0x05)
+    pew.Write8Register16(0x01a6, 0x1b)
+    pew.Write8Register16(0x01ac, 0x3e)
+    pew.Write8Register16(0x01a7, 0x1f)
+    pew.Write8Register16(0x0030, 0x00)
 
     // Recommended : Public registers - See data sheet for more detail
-    pew.WriteRegisterByte(0x0011, 0x10)       // Enables polling for 'New Sample ready'
+    pew.Write8Register16(0x0011, 0x10)       // Enables polling for 'New Sample ready'
                                 // when measurement completes
-    pew.WriteRegisterByte(0x010a, 0x30)       // Set the averaging sample period
+    pew.Write8Register16(0x010a, 0x30)       // Set the averaging sample period
                                 // (compromise between lower noise and
                                 // increased execution time)
-    pew.WriteRegisterByte(0x003f, 0x46)       // Sets the light and dark gain (upper
+    pew.Write8Register16(0x003f, 0x46)       // Sets the light and dark gain (upper
                                 // nibble). Dark gain should not be
                                 // changed.
-    pew.WriteRegisterByte(0x0031, 0xFF)       // sets the # of range measurements after
+    pew.Write8Register16(0x0031, 0xFF)       // sets the # of range measurements after
                                 // which auto calibration of system is
                                 // performed
-    pew.WriteRegisterByte(0x0040, 0x63)       // Set ALS integration time to 100ms
-    pew.WriteRegisterByte(0x002e, 0x01)       // perform a single temperature calibration
+    pew.Write8Register16(0x0040, 0x63)       // Set ALS integration time to 100ms
+    pew.Write8Register16(0x002e, 0x01)       // perform a single temperature calibration
                                 // of the ranging sensor
 
     // Optional: Public registers - See data sheet for more detail
-    pew.WriteRegisterByte(0x001b, 0x09)       // Set default ranging inter-measurement
+    pew.Write8Register16(0x001b, 0x09)       // Set default ranging inter-measurement
                                 // period to 100ms
-    pew.WriteRegisterByte(0x003e, 0x31)       // Set default ALS inter-measurement period
+    pew.Write8Register16(0x003e, 0x31)       // Set default ALS inter-measurement period
                                 // to 500ms
-    pew.WriteRegisterByte(0x0014, 0x24)       // Configures interrupt on 'New Sample
+    pew.Write8Register16(0x0014, 0x24)       // Configures interrupt on 'New Sample
                                 // Ready threshold event'
 }
 
@@ -344,24 +414,24 @@ func  loadSettings(pew*ErrorWriter) {
 */
 /**************************************************************************/
 
-func (pvl6180x *VL6180xDriver) readRange() (bRange, bStatus uint8, err error) {
+func (pvl6180x *VL6180xDriver) ReadRange() (bRange, bStatus uint8, err error) {
 	pew := NewErrorWriter(pvl6180x.connection)
   // wait for device to be ready for range measurement
-	pew.PollRegister(vl6180xRegResultRangeStatus, func(bRead uint8)(bool){
+	pew.PollRegister16(vl6180xRegResultRangeStatus, func(bRead uint8)(bool){
 		return 0 != (bRead & 0x01)
 		})
   // Start a range measurement
-  pew.WriteRegisterByte(vl6180xRegSysrangeStart, 0x01)
+  pew.Write8Register16(vl6180xRegSysrangeStart, 0x01)
 
   // Poll until bit 2 is set
-	pew.PollRegister(vl6180xRegResultInterruptStatusGpio,
+	pew.PollRegister16(vl6180xRegResultInterruptStatusGpio,
 		func(bRead uint8)(bool){ return 0!= (bRead & 0x04) } )
 
   // read range in mm
-  bRange = pew.ReadRegisterByte(vl6180xRegResultRangeVal)
+  bRange = pew.Read8Register16(vl6180xRegResultRangeVal)
 
   // clear interrupt
-  pew.WriteRegisterByte(vl6180xRegSystemInterruptClear, 0x07)
+  pew.Write8Register16(vl6180xRegSystemInterruptClear, 0x07)
 
 	// read error message
 	bStatus = pew.ReadRangeStatus()
@@ -380,7 +450,7 @@ func (pvl6180x *VL6180xDriver) readRange() (bRange, bStatus uint8, err error) {
 /**************************************************************************/
 
 func (pew *ErrorWriter) ReadRangeStatus() uint8 {
-  return pew.ReadRegisterByte(vl6180xRegResultRangeStatus) >> 4
+  return pew.Read8Register16(vl6180xRegResultRangeStatus) >> 4
 }
 
 
@@ -394,33 +464,33 @@ func (pvl6180x *VL6180xDriver) ReadLux(gain uint8) float32 {
 	pew := NewErrorWriter(pvl6180x.connection)
 
   var bMask uint8
-  bMask = pew.ReadRegisterByte(vl6180xRegSystemInterruptConfig)
+  bMask = pew.Read8Register16(vl6180xRegSystemInterruptConfig)
   bMask &= ^uint8(0x38)
   bMask |= (0x4 << 3) // IRQ on ALS ready
-  pew.WriteRegisterByte(vl6180xRegSystemInterruptConfig, bMask)
+  pew.Write8Register16(vl6180xRegSystemInterruptConfig, bMask)
 
   // 100 ms integration period
-  pew.WriteRegisterByte(vl6180xRegSysalsIntegrationPeriodHi, 0)
-  pew.WriteRegisterByte(vl6180xRegSysalsIntegrationPeriodLo, 100)
+  pew.Write8Register16(vl6180xRegSysalsIntegrationPeriodHi, 0)
+  pew.Write8Register16(vl6180xRegSysalsIntegrationPeriodLo, 100)
 
   // analog gain
   if gain > vl6180xAlsGain40 {
     gain = vl6180xAlsGain40
   }
-  pew.WriteRegisterByte(vl6180xRegSysalsAnalogueGain, 0x40 | gain)
+  pew.Write8Register16(vl6180xRegSysalsAnalogueGain, 0x40 | gain)
 
   // start ALS
-  pew.WriteRegisterByte(vl6180xRegSysalsStart, 0x1)
+  pew.Write8Register16(vl6180xRegSysalsStart, 0x1)
 
   // Poll until "New Sample Ready threshold event" is set
-	pew.PollRegister(vl6180xRegResultInterruptStatusGpio,
+	pew.PollRegister16(vl6180xRegResultInterruptStatusGpio,
 		func (bRead uint8)(bool) {return 4 == ((bRead >> 3) & 0x7)})
 
   // read lux!
-  lux := float32(pew.ReadRegisterWord(vl6180xRegResultAlsVal))
+  lux := float32(pew.Read16Register16(vl6180xRegResultAlsVal))
 
   // clear interrupt
-  pew.WriteRegisterByte(vl6180xRegSystemInterruptClear, 0x07)
+  pew.Write8Register16(vl6180xRegSystemInterruptClear, 0x07)
 
   lux *= 0.32 // calibrated count/lux
   switch(gain) {
