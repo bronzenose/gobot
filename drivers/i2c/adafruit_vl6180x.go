@@ -1,6 +1,9 @@
 package i2c
 import (
 	"fmt"
+	"errors"
+	//"syscall"
+	//"unsafe"
 	"container/ring"
 	"gobot.io/x/gobot"
 )
@@ -32,6 +35,34 @@ import (
 	products from Adafruit!
 */
 /**************************************************************************/
+/*
+const (
+  I2C_RDWR = 0x0707
+
+
+  // flags for i2c_msg.flags
+  I2C_M_TEN   = 0x0010  // this is a ten bit chip address 
+  I2C_M_RD    = 0x0001  // read data, from slave to master 
+  I2C_M_STOP    = 0x8000  // if I2C_FUNC_PROTOCOL_MANGLING 
+  I2C_M_NOSTART   = 0x4000  // if I2C_FUNC_NOSTART 
+  I2C_M_REV_DIR_ADDR  = 0x2000  // if I2C_FUNC_PROTOCOL_MANGLING 
+  I2C_M_IGNORE_NAK  = 0x1000  // if I2C_FUNC_PROTOCOL_MANGLING 
+  I2C_M_NO_RD_ACK   = 0x0800  // if I2C_FUNC_PROTOCOL_MANGLING 
+  I2C_M_RECV_LEN    = 0x0400  // length will be first received byte 
+ )
+type i2c_rdwr_ioctl_data struct {
+  prgi2c_msg *[]i2c_msg
+  nmsgs uint32
+}
+
+type i2c_msg struct {
+  addr uint16
+  flags uint16
+  len uint16
+  buf uintptr
+}
+*/
+
 
 const vl6180xDefaultI2cAddr uint8 = 0x29
 
@@ -74,6 +105,7 @@ const vl6180xErrorRangeoflow uint8 = 15
 
 type VL6180xDriver struct {
 name       string
+address    uint16
 connector  Connector
 connection Connection
 pringDebugStr *ring.Ring
@@ -126,15 +158,34 @@ func (vl6180x *VL6180xDriver) Connection() gobot.Connection { return vl6180x.con
 
 type ErrorWriter struct {
 	con Connection
+	address uint16
 	cw  uint
 	err error
 	strDuring string
 }
 
-func NewErrorWriter(con Connection) *ErrorWriter {
+func NewErrorWriter(con Connection, address uint16) *ErrorWriter {
 	pew := new(ErrorWriter)
 	pew.con = con
+	pew.address = address
+	if 0 == address {
+		pew.err = errors.New("please don't use 0 for the device address")
+	}
 	return pew
+}
+
+func (pew*ErrorWriter) checkId() {
+	b := pew.Read8Register16(vl6180xRegIdentificationModelId)
+	if !pew.IsOk() {
+		fmt.Printf("Couldn't read chip ID: %v", pew.Error())
+		//vl6180x.debugStatusf("reading the chip model ID (our first contact with it) returned err %v",  pew.Error())
+		return
+		}
+	if 0xb4 == b {
+	fmt.Println("read correct chip model")
+		} else {
+	fmt.Printf("!!! ERROR !!! read INCORRECT chip model %#x", b)
+		}
 }
 
 func (pew *ErrorWriter) ErrUnderlying() error {
@@ -177,15 +228,13 @@ func (pew *ErrorWriter) Write8Register8(bReg, bVal uint8) {
 
 func (pew *ErrorWriter) Write8Register16(wReg uint16, bVal uint8) {
 	if nil == pew.err {
-		pew.WriteByte(uint8(wReg >> 8))
-		pew.WriteByte(uint8(wReg & 0xff))
-		pew.WriteByte(bVal)
+		fmt.Printf("Writing 8 bits (%#x) to 16-bit register %#x on bus address %#x\n", bVal, wReg, pew.address)
+		pew.err = pew.con.Write8ToReg16AtBusAddr(pew.address, wReg, bVal)
 		if nil != pew.err {
-			// this hides the exact write that failed but seems more useful
-			pew.strDuring = fmt.Sprintf("Write8Register16(reg: %#X, val: %#X)",
-				wReg, bVal)
+			pew.strDuring = fmt.Sprintf("Write8Register16(reg: %#X)", wReg)
 		}
 	}
+	return
 }
 
 func (pew *ErrorWriter) WriteRegisterWord(wReg, wVal uint16) {
@@ -240,6 +289,19 @@ func (pew *ErrorWriter) Read8Register8(bReg uint8) (bRead uint8) {
 
 func (pew *ErrorWriter) Read8Register16(wReg uint16) (bRead uint8) {
 	if nil == pew.err {
+		// fmt.Printf("Reading 8 bits from 16-bit register %#x on bus address %#x\n", wReg, pew.address)
+		bRead, pew.err = pew.con.Read8FromReg16AtBusAddr(pew.address, wReg)
+		// fmt.Printf("Read %#x with error %v\n", bRead, pew.err)
+		if nil != pew.err {
+			pew.strDuring = fmt.Sprintf("Read8Register16(reg: %#X)", wReg)
+		}
+	}
+	return
+}
+
+/*
+func (pew *ErrorWriter) Read8Register16(wReg uint16) (bRead uint8) {
+	if nil == pew.err {
 		pew.WriteByte(uint8(wReg >> 8))
 		pew.WriteByte(uint8(wReg & 0xff))
 		bRead = pew.ReadByte()
@@ -249,6 +311,7 @@ func (pew *ErrorWriter) Read8Register16(wReg uint16) (bRead uint8) {
 	}
 	return
 }
+*/
 
 func (pew *ErrorWriter) Read16Register8(bReg uint8) (wRead uint16) {
 	if nil == pew.err {
@@ -277,6 +340,7 @@ func (pew *ErrorWriter) Read16Register16(wReg uint16) (wRead uint16) {
 func (pew *ErrorWriter) PollRegister16(wReg uint16, fnSuccess func(uint8)(bool)) {
 	for {
 		bRead := pew.Read8Register16(wReg)
+		//fmt.Printf("Polling register %#x, rec'd %#x, error %v\n", wReg, bRead, pew.err) 
 		if !pew.IsOk() || fnSuccess(bRead) {
 			return
 		}
@@ -307,15 +371,15 @@ func (pvl6180x *VL6180xDriver) DebugStatus() string {
 // Start starts the Driver up, and writes start command
 func (vl6180x *VL6180xDriver) Start() (err error) {
   bus := vl6180x.GetBusOrDefault(vl6180x.connector.GetDefaultBus())
-  address := vl6180x.GetAddressOrDefault(int(vl6180xDefaultI2cAddr))
+  vl6180x.address = uint16(vl6180x.GetAddressOrDefault(int(vl6180xDefaultI2cAddr)))
 
-  vl6180x.connection, err = vl6180x.connector.GetConnection(address, bus)
-	vl6180x.debugStatusf("connecting to address %#x on bus %#x returned err %v", address, bus, err)
+  vl6180x.connection, err = vl6180x.connector.GetConnection(int(vl6180x.address), bus)
+	vl6180x.debugStatusf("connecting to address %#x on bus %#x returned err %v", int(vl6180x.address), bus, err)
   if err != nil {
     return
   }
 
-	pew := NewErrorWriter(vl6180x.connection)
+	pew := NewErrorWriter(vl6180x.connection, vl6180x.address)
 	b := pew.Read8Register16(vl6180xRegIdentificationModelId)
 	if !pew.IsOk() {
 		err = pew.Error()
@@ -326,15 +390,19 @@ func (vl6180x *VL6180xDriver) Start() (err error) {
   if b != 0xB4 {
 		//vl6180x.debugStatus("MODEL DIDN'T MATCH BUT WE'RE GOING TO PROCEED ANYWAY")
     return fmt.Errorf("Model ID mismatch. Expected 0xB4, found: %#X", b)
-  }
-
+  } else {
+		vl6180x.debugStatus("We read the correct chip model")
+	}
+	pew.checkId()
   loadSettings(pew);
 	if !pew.IsOk() {
 		vl6180x.debugStatus("error loading status")
 	} else {
 		vl6180x.debugStatus("loaded status successfully")
 	}
+	pew.checkId()
 	pew.Write8Register16(vl6180xRegSystemFreshOutOfReset, 0x00)
+	pew.checkId()
 	return pew.Error()
 }
 
@@ -415,22 +483,30 @@ func  loadSettings(pew*ErrorWriter) {
 /**************************************************************************/
 
 func (pvl6180x *VL6180xDriver) ReadRange() (bRange, bStatus uint8, err error) {
-	pew := NewErrorWriter(pvl6180x.connection)
+	pew := NewErrorWriter(pvl6180x.connection, pvl6180x.address)
+	pew.checkId()
+	fmt.Println("polling for device ready")
   // wait for device to be ready for range measurement
 	pew.PollRegister16(vl6180xRegResultRangeStatus, func(bRead uint8)(bool){
 		return 0 != (bRead & 0x01)
 		})
+	pew.checkId()
+	fmt.Println("Starting measurement")
   // Start a range measurement
   pew.Write8Register16(vl6180xRegSysrangeStart, 0x01)
 
+	pew.checkId()
   // Poll until bit 2 is set
+	fmt.Println("polling for interrupt status")
 	pew.PollRegister16(vl6180xRegResultInterruptStatusGpio,
-		func(bRead uint8)(bool){ return 0!= (bRead & 0x04) } )
+		func(bRead uint8)(bool){ return 0x04 == (bRead & 0x04) } )
 
   // read range in mm
+	fmt.Println("reading range")
   bRange = pew.Read8Register16(vl6180xRegResultRangeVal)
 
   // clear interrupt
+	fmt.Println("clearing interrupt")
   pew.Write8Register16(vl6180xRegSystemInterruptClear, 0x07)
 
 	// read error message
@@ -461,7 +537,7 @@ func (pew *ErrorWriter) ReadRangeStatus() uint8 {
 /**************************************************************************/
 
 func (pvl6180x *VL6180xDriver) ReadLux(gain uint8) float32 {
-	pew := NewErrorWriter(pvl6180x.connection)
+	pew := NewErrorWriter(pvl6180x.connection, pvl6180x.address)
 
   var bMask uint8
   bMask = pew.Read8Register16(vl6180xRegSystemInterruptConfig)
@@ -524,3 +600,50 @@ func (pvl6180x *VL6180xDriver) ReadLux(gain uint8) float32 {
 
   return lux
 }
+
+/* these sort of belong in sysfs i2cDevice but that's not
+ * exported - we'd need to change Connection or something
+ * for now we only want to know if the method works.
+ */
+/*
+func i2cWrite16Read8(addrDevice uint16, wWrite uint16) (byte, error) {
+  var byteRead byte
+  var flagsTenBit uint16 = 0
+  if 0 < (addrDevice & 0xff00) {
+    flagsTenBit = I2C_M_TEN
+  }
+  rgi2c_msg := []i2c_msg {
+    i2c_msg {
+      addr: addrDevice,
+      flags: 0 | flagsTenBit, // write
+      len:   2,
+      buf: uintptr(unsafe.Pointer(&wWrite)),
+    },
+    i2c_msg {
+      addr: addrDevice,
+      flags: I2C_M_RD | flagsTenBit,
+      len: 1,
+      buf: uintptr(unsafe.Pointer(&byteRead)),
+    },
+  }
+ writeRead := &i2c_rdwr_ioctl_data {
+    prgi2c_msg: &rgi2c_msg,
+    nmsgs: 2,
+  }
+
+  _, _, errno := Syscall(
+    syscall.SYS_IOCTL,
+    d.file.Fd(),
+    I2C_RDWR,
+    uintptr(unsafe.Pointer(writeRead)),
+  )
+
+  if errno != 0 {
+    return byteRead, fmt.Errorf("I2C_RDWR Failed with syscall.Errno %v", errno)
+  }
+
+  return byteRead, nil
+}
+*/
+
+

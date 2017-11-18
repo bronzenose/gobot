@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"fmt"
 )
 
 const (
@@ -35,6 +36,8 @@ type I2cOperations interface {
 	WriteByteData(reg uint8, val uint8) (err error)
 	WriteWordData(reg uint8, val uint16) (err error)
 	WriteBlockData(reg uint8, b []byte) (err error)
+	Read8FromReg16AtBusAddr(addrDevice uint16, wReg uint16) (bRead uint8, err error)
+	Write8ToReg16AtBusAddr(addrDevice uint16, wReg uint16, bWrite uint8) (err error)
 }
 
 // I2cDevice is the interface to a specific i2c bus
@@ -137,6 +140,33 @@ func (c *i2cConnection) ReadWordData(reg uint8) (val uint16, err error) {
 		return 0, err
 	}
 	return c.bus.ReadWordData(reg)
+}
+
+func (c *i2cConnection) Read8FromReg16AtBusAddr(addr uint16, reg uint16) (val uint8, err error) {
+	if addr != uint16(c.address) {
+		return 0, fmt.Errorf("don't read to the wrong device adress! (expected %#x, but %#x was passed)", c.address, addr)
+	}
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if err := c.bus.SetAddress(c.address); err != nil {
+		return 0, err
+	}
+	val, err = c.bus.Read8FromReg16AtBusAddr(addr, reg)
+	return
+}
+
+func (c *i2cConnection) Write8ToReg16AtBusAddr(addr uint16, reg uint16, val uint8) (err error) {
+	if addr != uint16(c.address) {
+		return fmt.Errorf("don't write to the wrong device adress! (expected %#x, but %#x was passed)", c.address, addr)
+	}
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if err := c.bus.SetAddress(c.address); err != nil {
+		return err
+	}
+	return c.bus.Write8ToReg16AtBusAddr(addr, reg, val)
 }
 
 // WriteByte writes a single byte to the i2c device.
