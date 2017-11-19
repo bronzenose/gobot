@@ -303,7 +303,7 @@ func (d *i2cDevice) smbusAccess(readWrite byte, command byte, size uint32, data 
 	 * from a register with a two-byte address.
 	*/
 
-func (d *i2cDevice) i2cWrite16Read8(addrDevice uint16, wWrite uint16) (byte, error) {
+func (d *i2cDevice) i2cWrite16Read8_defunct(addrDevice uint16, wWrite uint16) (byte, error) {
 	var byteRead byte
 	var flagsTenBit uint16 = 0
 	if 0 < (addrDevice & 0xff00) {
@@ -379,6 +379,26 @@ type i2c_msg struct {
 	return byteRead, nil
 }
 
+func (d *i2cDevice) i2cWrite16Read8(addrDevice uint16, wWrite uint16) (bRead byte, err error) {
+	buf := make([]byte, 2)
+	buf[0] = byte(wWrite >> 8) // MSB
+	buf[1] = byte(wWrite & 0xff) // LSB
+
+	n, err := d.file.Write(buf)
+
+	//fmt.Printf("writing 2 bytes: %#x %#x\n", buf[0], buf[1])
+	if err != nil {
+		return 0, err
+	}
+
+	if n != len(buf) {
+		return 0, fmt.Errorf("Write to device truncated, %v of %v written", n, len(buf))
+}
+
+	bRead, err = d.ReadByte()
+	return bRead, err
+}
+
 func (d *i2cDevice) Write8ToReg16AtBusAddr(addrDevice uint16, wWrite uint16, bWrite byte) error {
 	buf := make([]byte, 3)
 	buf[0] = byte(wWrite >> 8) // MSB
@@ -387,7 +407,7 @@ func (d *i2cDevice) Write8ToReg16AtBusAddr(addrDevice uint16, wWrite uint16, bWr
 
 	n, err := d.file.Write(buf)
 
-	fmt.Printf("writing 3 bytes: %#x %#x %#x\n", buf[0], buf[1], buf[2])
+	//fmt.Printf("writing 3 bytes: %#x %#x %#x\n", buf[0], buf[1], buf[2])
 	if err != nil {
 		return err
 	}

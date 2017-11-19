@@ -208,7 +208,7 @@ func (pew *ErrorWriter) WriteByte(b uint8) {
 	if nil == pew.err {
 		pew.cw++
 		pew.err = pew.con.WriteByte(b)
-fmt.Printf("Write: %0x  err: %v\n", b, pew.err)
+		//fmt.Printf("Write: %0x  err: %v\n", b, pew.err)
 		if nil != pew.err {
 			pew.strDuring = fmt.Sprintf("WriteByte(%#X)", b)
 		}
@@ -228,7 +228,7 @@ func (pew *ErrorWriter) Write8Register8(bReg, bVal uint8) {
 
 func (pew *ErrorWriter) Write8Register16(wReg uint16, bVal uint8) {
 	if nil == pew.err {
-		fmt.Printf("Writing 8 bits (%#x) to 16-bit register %#x on bus address %#x\n", bVal, wReg, pew.address)
+		// fmt.Printf("Writing 8 bits (%#x) to 16-bit register %#x on bus address %#x\n", bVal, wReg, pew.address)
 		pew.err = pew.con.Write8ToReg16AtBusAddr(pew.address, wReg, bVal)
 		if nil != pew.err {
 			pew.strDuring = fmt.Sprintf("Write8Register16(reg: %#X)", wReg)
@@ -484,29 +484,29 @@ func  loadSettings(pew*ErrorWriter) {
 
 func (pvl6180x *VL6180xDriver) ReadRange() (bRange, bStatus uint8, err error) {
 	pew := NewErrorWriter(pvl6180x.connection, pvl6180x.address)
-	pew.checkId()
-	fmt.Println("polling for device ready")
+	//pew.checkId()
+	//fmt.Println("polling for device ready")
   // wait for device to be ready for range measurement
 	pew.PollRegister16(vl6180xRegResultRangeStatus, func(bRead uint8)(bool){
 		return 0 != (bRead & 0x01)
 		})
-	pew.checkId()
-	fmt.Println("Starting measurement")
+	//pew.checkId()
+	//fmt.Println("Starting measurement")
   // Start a range measurement
   pew.Write8Register16(vl6180xRegSysrangeStart, 0x01)
 
-	pew.checkId()
+	//pew.checkId()
   // Poll until bit 2 is set
-	fmt.Println("polling for interrupt status")
+	//fmt.Println("polling for interrupt status")
 	pew.PollRegister16(vl6180xRegResultInterruptStatusGpio,
 		func(bRead uint8)(bool){ return 0x04 == (bRead & 0x04) } )
 
   // read range in mm
-	fmt.Println("reading range")
+	//fmt.Println("reading range")
   bRange = pew.Read8Register16(vl6180xRegResultRangeVal)
 
   // clear interrupt
-	fmt.Println("clearing interrupt")
+	//fmt.Println("clearing interrupt")
   pew.Write8Register16(vl6180xRegSystemInterruptClear, 0x07)
 
 	// read error message
